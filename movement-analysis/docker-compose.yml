@@ -1,0 +1,44 @@
+services:
+  movement-database:
+    container_name: movement-database
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      # Host file -> Postgres "run these SQL files on first boot" folder. :ro = container cannot edit our file.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  movement-api:
+    container_name: movement-api
+    build:
+      context: ./api
+    env_file:
+      - ../.env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      POSTGRES_HOST: movement-database
+      POSTGRES_PORT: "5432"
+    ports:
+      - "8080:8080"
+    depends_on:
+      movement-database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres_data:

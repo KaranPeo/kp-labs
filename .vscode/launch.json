@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Movement-Analysis (Docker)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "echo 'Containers are up. Swagger: http://localhost:8080/swagger'",
+      "cwd": "${workspaceFolder}/movement-analysis",
+      "preLaunchTask": "compose-up"
+    },
+    {
+      "name": "Debug Movement-Analysis API (local)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "predebug-api",
+      "program": "${workspaceFolder}/movement-analysis/api/bin/Debug/net10.0/MovementAnalysis.Api.dll",
+      "cwd": "${workspaceFolder}/movement-analysis/api",
+      "console": "integratedTerminal",
+      "stopAtEntry": false,
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://localhost:8080",
+        "POSTGRES_HOST": "127.0.0.1",
+        "POSTGRES_PORT": "5433"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "\\bNow listening on:\\s+(https?://\\S+)",
+        "uriFormat": "%s/swagger"
+      }
+    }
+  ]
+}

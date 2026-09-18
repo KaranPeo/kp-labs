@@ -1,0 +1,17 @@
+# Personal Apple Health dumps — never commit
+health-data/*
+!health-data/exports/.gitkeep
+
+# Movement analysis API build output
+movement-analysis/**/bin/
+movement-analysis/**/obj/
+movement-analysis/.vs/
+
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Local secrets — copy .env.example to .env
+.env
+!.env.example

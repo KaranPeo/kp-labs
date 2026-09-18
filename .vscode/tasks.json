@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "compose-up",
+      "type": "shell",
+      "command": "docker compose --env-file \"${workspaceFolder}/.env\" up --build -d --wait && open http://localhost:8080/swagger",
+      "options": {
+        "cwd": "${workspaceFolder}/movement-analysis"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "movement-database-for-debug",
+      "type": "shell",
+      "command": "docker compose --env-file \"${workspaceFolder}/.env\" up -d movement-database && docker compose --env-file \"${workspaceFolder}/.env\" stop movement-api",
+      "options": {
+        "cwd": "${workspaceFolder}/movement-analysis"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "build-api",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "${workspaceFolder}/movement-analysis/api/MovementAnalysis.Api.csproj",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary;ForceNoAlign"
+      ],
+      "problemMatcher": "$msCompile",
+      "group": "build"
+    },
+    {
+      "label": "predebug-api",
+      "dependsOrder": "sequence",
+      "dependsOn": ["movement-database-for-debug", "build-api"]
+    }
+  ]
+}
