@@ -16,10 +16,11 @@ System diagram: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
 ### Added
 
 - Presigned MinIO PUT via `POST /videos/upload-url` (`videoId`, `presignedUrl`; Development also returns `uploadCommand`).
-- `GET /videos/{id}` to read an upload's status.
+- `GET /videos/{id}` to read an upload's status; includes `videoUrl` (signed GET) once `done`.
+- Upload page at `/upload`: pick a file and movement, watch upload progress, and follow a stepper through queued, analyzing, and results, with video playback at the end.
 - Initial `uploads` row with status `awaiting_upload`; MinIO object-created webhook (`POST /webhooks/minio/object-created`) sets `pending` and publishes to Kafka.
 - MinIO (`movement-storage`) with bucket `videos`; Kafka 4.3 (KRaft, `movement-kafka`) with topic `pose-estimation-jobs`.
-- Python worker (`movement-worker`) that consumes jobs and stubs `process_video()`.
+- Python worker (`movement-worker`) that consumes jobs, stubs `process_video()`, and writes `processing` / `done` / `failed` to Postgres.
 - `GET /health` also checks MinIO.
 
 ### Removed

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload a video - Movement Analysis</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #181b22; --line: #2a2f3a; --text: #e8eaf0; --muted: #8a91a0;
+    --accent: #4f8cff; --ok: #34c77b; --bad: #ef5b5b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .card { width: min(520px, 92vw); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 28px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { margin: 0 0 22px; color: var(--muted); }
+  .form { display: grid; gap: 12px; margin-bottom: 26px; }
+  label { font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+  input[type=file], select {
+    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  button {
+    padding: 11px; border: 0; border-radius: 8px; background: var(--accent); color: white;
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; }
+  .step { display: grid; grid-template-columns: 28px 1fr; gap: 14px; position: relative; padding-bottom: 20px; }
+  .step:last-child { padding-bottom: 0; }
+  .step:not(:last-child)::after {
+    content: ""; position: absolute; left: 13px; top: 30px; bottom: 2px; width: 2px; background: var(--line);
+  }
+  .step.done:not(:last-child)::after { background: var(--ok); }
+  .dot {
+    width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--line);
+    display: grid; place-items: center; font-size: 13px; font-weight: 700; color: var(--muted);
+  }
+  .step.active .dot { border-color: var(--accent); background: var(--accent); color: white; animation: pulse 1.4s infinite; }
+  .step.done .dot { border-color: var(--ok); background: var(--ok); color: white; }
+  .step.failed .dot { border-color: var(--bad); background: var(--bad); color: white; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(79,140,255,.55); } 50% { box-shadow: 0 0 0 7px rgba(79,140,255,0); } }
+  .title { font-weight: 600; padding-top: 3px; }
+  .step:not(.active):not(.done):not(.failed) .title { color: var(--muted); }
+  .detail { font-size: 13px; color: var(--muted); min-height: 1px; }
+  .step.failed .detail { color: var(--bad); }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); margin-top: 6px; overflow: hidden; display: none; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  video { width: 100%; margin-top: 10px; border-radius: 8px; background: black; }
+  .result a { color: var(--accent); font-size: 13px; }
+  .id { margin-top: 20px; font: 12px ui-monospace, monospace; color: var(--muted); word-break: break-all; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>Upload a video</h1>
+  <p class="sub">Pick a clip and follow it through the pipeline.</p>
+
+  <div class="form">
+    <label>Video file
+      <input id="file" type="file" accept="video/*">
+    </label>
+    <label>Movement
+      <select id="movement">
+        <option value="squat">Squat</option>
+        <option value="high_kick">High kick</option>
+      </select>
+    </label>
+    <button id="go" disabled>Upload</button>
+  </div>
+
+  <ol class="steps">
+    <li class="step" data-step="link"><span class="dot">1</span><div><div class="title">Get upload link</div><div class="detail"></div></div></li>
+    <li class="step" data-step="upload"><span class="dot">2</span><div><div class="title">Upload to storage</div><div class="detail"></div><div class="bar"><div></div></div></div></li>
+    <li class="step" data-step="queued"><span class="dot">3</span><div><div class="title">Queued for analysis</div><div class="detail"></div></div></li>
+    <li class="step" data-step="analyzing"><span class="dot">4</span><div><div class="title">Analyzing</div><div class="detail"></div></div></li>
+    <li class="step" data-step="results"><span class="dot">5</span><div><div class="title">Results</div><div class="detail"></div><div class="result"></div></div></li>
+  </ol>
+
+  <div class="id" id="videoId"></div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fileInput = $("#file");
+const button = $("#go");
+const POLL_MS = 1000;
+const POLL_TIMEOUT_MS = 2 * 60 * 1000;
+
+function setStep(name, state, detail) {
+  const el = document.querySelector(`[data-step="${name}"]`);
+  el.classList.remove("active", "done", "failed");
+  if (state) el.classList.add(state);
+  if (detail !== undefined) el.querySelector(".detail").textContent = detail;
+  el.querySelector(".dot").textContent =
+    state === "done" ? "\u2713" : state === "failed" ? "!" : [...el.parentNode.children].indexOf(el) + 1;
+}
+
+function reset() {
+  for (const name of ["link", "upload", "queued", "analyzing", "results"]) setStep(name, null, "");
+  $(".bar").style.display = "none";
+  $(".bar > div").style.width = "0";
+  $(".result").replaceChildren();
+  $("#videoId").textContent = "";
+}
+
+const mb = (bytes) => (bytes / 1024 / 1024).toFixed(1);
+
+function put(url, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      $(".bar > div").style.width = pct + "%";
+      setStep("upload", "active", `${pct}% \u00b7 ${mb(e.loaded)} / ${mb(e.total)} MB`);
+    };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`storage returned ${xhr.status}`)));
+    xhr.onerror = () => reject(new Error("network error (is MinIO reachable / CORS allowed?)"));
+    xhr.send(file);
+  });
+}
+
+// Status in Postgres -> stepper. Webhook sets pending, worker sets processing then done/failed.
+function render(video) {
+  switch (video.status) {
+    case "awaiting_upload":
+      setStep("queued", "active", "Waiting for storage to confirm the upload");
+      return false;
+    case "pending":
+      setStep("queued", "active", "Waiting for a worker");
+      return false;
+    case "processing":
+      setStep("queued", "done", "");
+      setStep("analyzing", "active", "Worker started");
+      return false;
+    case "done":
+      setStep("queued", "done", "");
+      setStep("analyzing", "done", "");
+      setStep("results", "done", "Ready");
+      showVideo(video.videoUrl);
+      return true;
+    case "failed":
+      setStep("queued", "done", "");
+      setStep("analyzing", "failed", "Analysis failed");
+      return true;
+    default:
+      return false;
+  }
+}
+
+function showVideo(url) {
+  if (!url) return;
+  const video = document.createElement("video");
+  video.src = url;
+  video.controls = true;
+  video.playsInline = true;
+  const link = document.createElement("a");
+  link.href = url;
+  link.textContent = "Download (if it won't play in this browser)";
+  $(".result").replaceChildren(video, link);
+}
+
+async function poll(videoId) {
+  const started = Date.now();
+  while (Date.now() - started < POLL_TIMEOUT_MS) {
+    const res = await fetch(`/videos/${videoId}`);
+    if (res.ok && render(await res.json())) return;
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+  const stuck = document.querySelector(".step.active") ?? document.querySelector('[data-step="queued"]');
+  setStep(stuck.dataset.step, "failed", "Timed out waiting for status");
+}
+
+async function upload() {
+  const file = fileInput.files[0];
+  if (!file) return;
+  button.disabled = true;
+  reset();
+
+  let current = "link";
+  try {
+    setStep("link", "active", "Requesting a signed URL");
+    const res = await fetch("/videos/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, movementType: $("#movement").value }),
+    });
+    if (!res.ok) throw new Error(`API returned ${res.status}`);
+    const { videoId, presignedUrl } = await res.json();
+    $("#videoId").textContent = `videoId ${videoId}`;
+    setStep("link", "done", "");
+
+    current = "upload";
+    $(".bar").style.display = "block";
+    setStep("upload", "active", `0% \u00b7 0 / ${mb(file.size)} MB`);
+    await put(presignedUrl, file);
+    setStep("upload", "done", `${mb(file.size)} MB uploaded`);
+
+    current = "queued";
+    await poll(videoId);
+  } catch (err) {
+    setStep(current, "failed", err.message);
+  } finally {
+    button.disabled = !fileInput.files[0];
+  }
+}
+
+fileInput.addEventListener("change", () => (button.disabled = !fileInput.files[0]));
+button.addEventListener("click", upload);
+</script>
+</body>
+</html>

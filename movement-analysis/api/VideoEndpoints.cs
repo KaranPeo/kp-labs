@@ -70,11 +70,16 @@ internal static class VideoEndpoints
             return Results.Ok(new { videoId, presignedUrl = url });
         });
 
-        // Read an upload's status.
+        // Read an upload's status (polled by the upload page).
         app.MapGet("/videos/{id:guid}", GetVideo);
     }
 
-    private static async Task<IResult> GetVideo(Guid id, NpgsqlDataSource dataSource, CancellationToken ct)
+    private static async Task<IResult> GetVideo(
+        Guid id,
+        NpgsqlDataSource dataSource,
+        PresignS3 presign,
+        StorageBucket storage,
+        CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var cmd = new NpgsqlCommand(
@@ -91,13 +96,29 @@ internal static class VideoEndpoints
             return Results.NotFound();
         }
 
+        var storageKey = reader.GetString(3);
+        var status = reader.GetString(4);
+        string? videoUrl = null;
+        if (status == "done")
+        {
+            videoUrl = presign.Client.GetPreSignedURL(new GetPreSignedUrlRequest
+            {
+                BucketName = storage.Name,
+                Key = storageKey,
+                Verb = HttpVerb.GET,
+                Expires = DateTime.UtcNow.AddMinutes(15),
+                Protocol = Protocol.HTTP,
+            });
+        }
+
         return Results.Ok(new UploadRow(
             reader.GetGuid(0),
             reader.GetGuid(1),
             reader.GetString(2),
-            reader.GetString(3),
-            reader.GetString(4),
+            storageKey,
+            status,
             reader.GetFieldValue<DateTimeOffset>(5),
-            reader.GetFieldValue<DateTimeOffset>(6)));
+            reader.GetFieldValue<DateTimeOffset>(6),
+            videoUrl));
     }
 }

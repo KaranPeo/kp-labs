@@ -62,6 +62,9 @@ app.MapOpenApi();
 app.UseSwaggerUI(o => o.SwaggerEndpoint("/openapi/v1.json", "v1"));
 app.MapGet("/", () => Results.Redirect("/swagger")).ExcludeFromDescription();
 
+app.UseStaticFiles();           // wwwroot/
+app.MapGet("/upload", () => Results.Redirect("/upload.html")).ExcludeFromDescription(); // upload page
+
 HealthEndpoints.Map(app);       // GET  /health
 VideoEndpoints.Map(app);        // POST /videos/upload-url, GET /videos/{id}
 MinioWebhookEndpoints.Map(app); // POST /webhooks/minio/object-created

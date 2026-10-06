@@ -17,7 +17,8 @@ internal sealed record UploadRow(
     string VideoObjectKey,
     string Status,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? VideoUrl); // signed GET URL, only once status is done
 
 internal sealed class MinioNotification
 {

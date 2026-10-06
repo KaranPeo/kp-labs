@@ -134,11 +134,17 @@ services:
     container_name: movement-worker
     build:
       context: ./worker
+    env_file:
+      - ../.env
     environment:
+      POSTGRES_HOST: movement-database
+      POSTGRES_PORT: "5432"
       KAFKA_BOOTSTRAP_SERVERS: movement-kafka:19092
       KAFKA_TOPIC: pose-estimation-jobs
       KAFKA_GROUP_ID: pose-estimation-worker
     depends_on:
+      movement-database:
+        condition: service_healthy
       movement-kafka-init:
         condition: service_completed_successfully
 
