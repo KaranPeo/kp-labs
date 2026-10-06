@@ -7,6 +7,9 @@ movement-analysis/**/bin/
 movement-analysis/**/obj/
 movement-analysis/.vs/
 
+# Local test videos
+movement-analysis/*.mov
+
 .DS_Store
 __pycache__/
 *.pyc

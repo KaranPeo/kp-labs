@@ -2,7 +2,15 @@
 -- (docker-entrypoint-initdb.d). Recreating the volume is how you re-run this.
 
 CREATE TYPE movement_type AS ENUM ('squat', 'high_kick');
-CREATE TYPE upload_status AS ENUM ('uploaded', 'queued', 'processing', 'done', 'failed');
+CREATE TYPE upload_status AS ENUM (
+  'awaiting_upload',
+  'pending',
+  'uploaded',
+  'queued',
+  'processing',
+  'done',
+  'failed'
+);
 
 CREATE TABLE uploads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

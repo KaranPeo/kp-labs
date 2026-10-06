@@ -10,13 +10,93 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
-      # Host file -> Postgres "run these SQL files on first boot" folder. :ro = container cannot edit our file.
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  movement-storage:
+    container_name: movement-storage
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_NOTIFY_WEBHOOK_ENABLE_PRIMARY: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_PRIMARY: http://host.docker.internal:8080/webhooks/minio/object-created
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  movement-storage-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: movement-storage-init
+    env_file:
+      - ../.env
+    depends_on:
+      movement-storage:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://movement-storage:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc event add "local/$$MINIO_BUCKET" arn:minio:sqs::PRIMARY:webhook --event put || true
+        mc event list "local/$$MINIO_BUCKET"
+
+  movement-kafka:
+    container_name: movement-kafka
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:29093,PLAINTEXT://:19092,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://movement-kafka:19092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@movement-kafka:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+    ports:
+      - "29092:29092"
+
+  movement-kafka-init:
+    image: apache/kafka:4.3.1
+    container_name: movement-kafka-init
+    depends_on:
+      - movement-kafka
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        echo "waiting for kafka..."
+        for i in $$(seq 1 30); do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server movement-kafka:19092 --list && break
+          sleep 2
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server movement-kafka:19092 \
+          --create --if-not-exists --topic pose-estimation-jobs \
+          --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server movement-kafka:19092 --list
 
   movement-api:
     container_name: movement-api
@@ -28,11 +108,21 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       POSTGRES_HOST: movement-database
       POSTGRES_PORT: "5432"
+      MINIO_ENDPOINT: http://movement-storage:9000
+      MINIO_PRESIGN_ENDPOINT: http://127.0.0.1:9000
+      KAFKA_BOOTSTRAP_SERVERS: movement-kafka:19092
+      KAFKA_TOPIC: pose-estimation-jobs
     ports:
       - "8080:8080"
     depends_on:
       movement-database:
         condition: service_healthy
+      movement-storage:
+        condition: service_healthy
+      movement-storage-init:
+        condition: service_completed_successfully
+      movement-kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080'"]
       interval: 5s
@@ -40,5 +130,18 @@ services:
       retries: 12
       start_period: 10s
 
+  movement-worker:
+    container_name: movement-worker
+    build:
+      context: ./worker
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: movement-kafka:19092
+      KAFKA_TOPIC: pose-estimation-jobs
+      KAFKA_GROUP_ID: pose-estimation-worker
+    depends_on:
+      movement-kafka-init:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
+  minio_data:

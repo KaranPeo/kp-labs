@@ -13,7 +13,7 @@
     {
       "label": "movement-database-for-debug",
       "type": "shell",
-      "command": "docker compose --env-file \"${workspaceFolder}/.env\" up -d movement-database && docker compose --env-file \"${workspaceFolder}/.env\" stop movement-api",
+      "command": "docker compose --env-file \"${workspaceFolder}/.env\" up -d movement-database movement-storage movement-storage-init movement-kafka movement-kafka-init && docker compose --env-file \"${workspaceFolder}/.env\" stop movement-api",
       "options": {
         "cwd": "${workspaceFolder}/movement-analysis"
       },

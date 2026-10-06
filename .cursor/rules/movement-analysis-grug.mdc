@@ -1,0 +1,14 @@
+---
+description: Keep movement-analysis simple (grug brain)
+globs: movement-analysis/**
+alwaysApply: false
+---
+
+# Grug brain
+
+Simplification beats extra architecture. Ship the current version's task.
+
+- Do not add services, packages, layers, or abstractions this version does not need
+- Prefer a few obvious files over "the right" enterprise layout
+- Default run is Docker Compose (API, Postgres, MinIO, Kafka, worker). Host `dotnet` is only for debugging the API with breakpoints
+- Skip future versions (real MediaPipe, JWT, Redis) until we are building that version
