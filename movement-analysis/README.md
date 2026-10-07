@@ -1,45 +1,85 @@
-# movement-analysis — V0 (API + Postgres)
+# movement-analysis — 0.1.0
 
-Prove the local loop: write a row, read it back. No MinIO, queue, workers, or auth yet.
+Upload page, presigned video upload to MinIO, webhook → Kafka, Python worker stub that reports status.
 
 ## Run (Mac)
 
-Docker Desktop running. C# extension installed (`ms-dotnettools.csharp`). Open the `kp-labs` workspace.
+Copy [`.env.example`](../.env.example) to [`.env`](../.env) at the repo root. MinIO password must be at least 8 characters.
 
-Two Run and Debug configs (dropdown next to the green play button):
+If this machine already ran 0.0.0, recreate the Postgres volume so `awaiting_upload` / `pending` exist (`docker compose --env-file ../.env down -v` wipes local DB and MinIO data).
 
-**API + Postgres (Docker)** — default F5. Builds and starts both containers. Opens [http://localhost:8080/swagger](http://localhost:8080/swagger). No breakpoints (Release image). Stop the debug session does not stop the containers; use `docker compose stop` in `movement-analysis/` when you want them down.
+F5 **Movement-Analysis (Docker)** starts everything. Swagger: [http://localhost:8080/swagger](http://localhost:8080/swagger). MinIO console: [http://localhost:9001](http://localhost:9001).
 
-**Debug API (host)** — Stops the API container (frees port 8080), keeps Postgres in Docker, runs the API on local allowing for debug. Host API uses **127.0.0.1:5433** so it does not hit Homebrew Postgres on 5432.
+**Upload test (browser)**
 
-Same Swagger steps either way: **POST /uploads** → copy `id` → **GET /uploads/{id}**.
+Open [http://localhost:8080/upload](http://localhost:8080/upload), pick a video and a movement, and click Upload. The stepper fills as the upload moves through the system: Get upload link → Upload to storage (progress bar) → Queued for analysis → Analyzing (worker started) → Results (worker done, video plays).
 
-Do not run both configs at once — they share port 8080.
+iPhone `.mov` files (HEVC) play in Safari but may not in Chrome; the page shows a download link as a fallback.
 
-`init.sql` only runs when the Postgres volume is first created. To reset schema:
+**Manual upload test (curl)**
 
-Copy [`.env.example`](../.env.example) to [`.env`](../.env) at the repo root (gitignored). Compose and the API read `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` from there.
+Export a clip from Photos into this folder (or copy one here). Use that exact file name in the request — `fileName` is the name of the file on disk, not the Photos library path.
 
-```bash
-cd movement-analysis
-docker compose --env-file ../.env down -v
-docker compose --env-file ../.env up --build
-```
+1. F5 **Movement-Analysis (Docker)** (or start Compose yourself).
+2. `POST /videos/upload-url` with `{ "fileName": "clip.mp4" }`.
+3. In Development the response includes `uploadCommand`. Run it from this folder, next to the video:
+   `cd movement-analysis` then paste the command.
+4. MinIO notifies the API; status becomes `pending`; the worker picks up the Kafka job (`docker logs -f movement-worker`) and moves it to `processing`, then `done`.
+5. `GET /videos/{videoId}` (includes `videoUrl` once `done`).
 
-## What each file is
+`.mov` files in this folder are gitignored so Photos exports stay local.
 
-- **`docker-compose.yml`** — two services on one Docker network. Service names and container names are both `movement-database` and `movement-api` (Compose DNS and `docker ps` match). Image is official `postgres:18` (current stable major, ARM64 on Apple Silicon). Pin the major (`18`), not `latest`. Credentials come from repo-root `.env` (`POSTGRES_USER` / `PASSWORD` / `DB`). Host port is **5433** → container 5432 so it does not collide with Homebrew Postgres on 5432. The named volume `postgres_data` mounts at `/var/lib/postgresql` (Postgres 18+ image layout). `./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro` bind-mounts our schema file into the official image’s first-boot folder; Postgres runs `*.sql` there **only when the data volume is empty**. `:ro` means the container cannot write back to the file on your Mac. `healthcheck` + `pg_isready` lets `movement-api` wait until the database accepts connections. `movement-api` is built from `api/Dockerfile` and connects to host `movement-database` on port 5432 *inside* the network.
+## Upload flow
 
-- **`db/init.sql`** — Postgres `ENUM` types for `movement_type` and `upload_status`, then `uploads` with the spec columns.
+The client never sends video bytes through the API. The API hands out a short-lived URL, the client uploads straight to MinIO, and MinIO tells the API when the file has landed. Diagram: [docs/releases/v0.1.0.md](../docs/releases/v0.1.0.md).
 
-- **`api/Dockerfile`** — multi-stage: `sdk:10.0` restores and publishes; `aspnet:10.0` is a smaller runtime image. `ASPNETCORE_URLS=http://0.0.0.0:8080` makes Kestrel listen on all interfaces inside the container (required for port mapping). Official Microsoft images publish `linux/arm64`.
+1. **Request an upload URL** — client calls `POST /videos/upload-url` with `{ "fileName": "IMG_3141.mov" }` (optional `movementType`: `squat` (default) or `high_kick`).
+   - A missing or blank `fileName`, or any other `movementType`, gets a 400. Directories are stripped from `fileName` (`../../etc/x.mov` becomes `x.mov`).
+   - The API creates a `videoId` and the object key `{videoId}/{fileName}`.
+   - It inserts an `uploads` row with status `awaiting_upload`.
+   - It signs a PUT URL for that one key, valid for 15 minutes. Signing happens locally with the MinIO credentials; no call to MinIO.
+   - Response: `videoId`, `presignedUrl`, and in Development a ready-to-run `uploadCommand` (curl).
+2. **Upload the file** — client sends `PUT <presignedUrl>` with the file as the body, directly to MinIO on port 9000. MinIO checks the signature and expiry, then stores the object in the `videos` bucket. A changed signature, a different key, or a different verb (e.g. GET with the PUT URL) gets a 403.
+3. **MinIO notifies the API** — on object creation MinIO POSTs an S3-style event to `/webhooks/minio/object-created` (configured by `MINIO_NOTIFY_WEBHOOK_*` and `movement-storage-init`). The API reads `Records[0].s3.object.key` and URL-decodes it (`chaos+test.mov` → `chaos test.mov`).
+4. **Queue the job** — one statement moves the row from `awaiting_upload` to `pending`, matching on the object key: `UPDATE … WHERE video_object_key = @key AND status = 'awaiting_upload' RETURNING id, movement_type`.
+   - If no row comes back, the event is acknowledged with 200 and ignored. That covers unknown keys, duplicate events, and re-uploads to the same URL (the row has already moved on). Malformed or empty bodies are ignored the same way.
+   - Because the status check is in the `WHERE`, two racing deliveries can't both win.
+   - The winner publishes `{ videoId, storageKey, exerciseType }` to Kafka topic `pose-estimation-jobs`, keyed by `videoId`.
+5. **Worker picks it up** — `movement-worker` (consumer group `pose-estimation-worker`) reads the message and writes status straight to Postgres, opening a fresh connection per job:
+   - Sets the row to `processing`, conditional on it still being `pending`. If that updates nothing (duplicate job), it skips.
+   - Calls `process_video()`. In 0.1.0 that logs the job and sleeps 3 seconds; pose estimation comes later.
+   - Sets `done` on success, or `failed` if `process_video()` raises.
+   - Commits the Kafka offset only after the job is handled, so a crash mid-job means redelivery, not a lost job.
+6. **Check status** — `GET /videos/{videoId}` returns the row: `awaiting_upload` until the PUT lands, then `pending`, `processing`, and `done` (or `failed`). Once `done` it also returns `videoUrl`, a signed GET URL valid for 15 minutes.
 
-- **`api/MovementAnalysis.Api.csproj`** — `net10.0` web SDK, Npgsql 10, Microsoft.AspNetCore.OpenApi, Swashbuckle Swagger UI. No ORM.
+The upload page ([api/wwwroot/upload.html](api/wwwroot/upload.html)) runs steps 1, 2, and 6 in the browser: it PUTs the file with `XMLHttpRequest` for progress events, then polls `GET /videos/{videoId}` every second for up to 2 minutes. The browser upload is cross-origin (`localhost:8080` → `127.0.0.1:9000`), which works because MinIO allows any origin by default.
 
-Repo-root **`.vscode/launch.json`** / **`tasks.json`**: **API + Postgres (Docker)** runs `docker compose up --build -d --wait`. **Debug API (host)** stops the API container, starts Postgres, then debugs the DLL on port 8080.
+Stepper mapping: `awaiting_upload` → Queued (active, "waiting for storage"), `pending` → Queued (active, "waiting for a worker"), `processing` → Analyzing (active), `done` → Results (video player plus a download link), `failed` → Analyzing turns red. A failed presign or PUT turns that step red; a poll that never finishes turns the current step red after 2 minutes.
 
-- **`api/appsettings.json`** — logging only. DB user/password/name come from repo-root `.env` (or the process environment). Host/port: Compose sets `POSTGRES_HOST=movement-database` and `POSTGRES_PORT=5432`; local debug defaults to `127.0.0.1:5433`.
+## When things go wrong
 
-- **`api/Program.cs`** — minimal APIs. `NpgsqlDataSource` is a singleton connection pool. `GET /health` runs `SELECT 1` so a 503 means the API process is up but Postgres is not. `POST /uploads` inserts dummy values for every column and returns `201` + the row. `GET /uploads/{id}` reads it back or `404`. SQL parameters (`@id`, …) plus `::movement_type` / `::upload_status` casts keep enum values typed without extra Npgsql enum mapping. `AddOpenApi` + Swagger UI at `/swagger` for clicking endpoints in a browser. `/` redirects there.
+Each of these was tested against the full Compose stack for 0.1.0.
 
-- **`api/.dockerignore`** — keeps local `bin/` / `obj/` out of the image build context.
+| Situation | What happens |
+| --- | --- |
+| Worker stopped | Jobs wait in Kafka; rows stay `pending` and the page stays on Queued. When the worker starts, it picks them up within about a second. |
+| `docker stop movement-worker` | The worker handles SIGTERM, closes its Kafka consumer (leaving the group), and exits at once. Without this, Python as PID 1 ignores SIGTERM, Docker kills it after 10s, and the next worker waits ~45s for Kafka's session timeout before getting the partition. |
+| API restarted mid-upload | The page keeps polling through the blip and finishes normally. |
+| Postgres restarted | The API's first request afterwards can fail with a 500 (a pooled connection was killed; Npgsql discards it and the next request works). The worker is unaffected because it connects per job. |
+| Postgres down when a job arrives | The worker can't connect, exits, and `restart: unless-stopped` restarts it with backoff. The offset isn't committed, so once Postgres is back the job is redelivered and finishes. |
+| Malformed Kafka message (not JSON, no `videoId`) | Logged as `skip malformed job` and skipped; the worker keeps running. |
+| Duplicate webhook, or a second PUT to the same signed URL | Ignored; no second job. The second PUT does overwrite the stored object while the URL is still valid (15 minutes). |
+| Bad `movementType` / missing `fileName` | 400 with an error message. |
+
+Known gaps:
+- If the Kafka publish fails after the row is set to `pending`, no job is sent and the row stays `pending`.
+- If the webhook call fails (e.g. the API is down or returns 500), the event can be lost: MinIO only queues and retries webhook events when `MINIO_NOTIFY_WEBHOOK_QUEUE_DIR` is set, and it isn't here. The row then stays `awaiting_upload` even though the file is stored.
+- If the worker dies while a job is `processing`, the redelivered job is skipped (it's no longer `pending`), so the row stays `processing`.
+
+## What each service is
+
+- **movement-database** — Postgres 18, `uploads` table.
+- **movement-storage** — MinIO. Init container creates bucket `videos` and the object-created webhook.
+- **movement-kafka** — KRaft broker. Init container creates `pose-estimation-jobs`.
+- **movement-api** — upload page, presigned URLs, webhook, Kafka produce.
+- **movement-worker** — [worker/](worker/) Python consumer; writes `processing` / `done` / `failed` to Postgres. Restarts automatically if it exits.

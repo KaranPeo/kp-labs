@@ -22,7 +22,11 @@
         "ASPNETCORE_ENVIRONMENT": "Development",
         "ASPNETCORE_URLS": "http://localhost:8080",
         "POSTGRES_HOST": "127.0.0.1",
-        "POSTGRES_PORT": "5433"
+        "POSTGRES_PORT": "5433",
+        "MINIO_ENDPOINT": "http://127.0.0.1:9000",
+        "MINIO_PRESIGN_ENDPOINT": "http://127.0.0.1:9000",
+        "KAFKA_BOOTSTRAP_SERVERS": "localhost:29092",
+        "KAFKA_TOPIC": "pose-estimation-jobs"
       },
       "envFile": "${workspaceFolder}/.env",
       "serverReadyAction": {
